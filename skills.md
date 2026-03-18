@@ -1,0 +1,2 @@
+如果要獲取新聞，可以使用以下命令，xxx 為使用者希望搜尋的關鍵字：
+命令: curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" "https://news.google.com/rss/search?q=xxx&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
