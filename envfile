@@ -1,2 +1,7 @@
-
-ollamaUrl=http://172.18.124.210:11434
+BotSocketName=opengrab
+Default_Provider=ollama
+OLLAMA_HOST=http://172.18.124.210:11434
+# OLLAMA_HOST=https://openrouter.ai/api
+ollamaKey=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
+DEFAULT_MODEL=gemma4:latest
+#arcee-ai/trinity-large-preview:free
