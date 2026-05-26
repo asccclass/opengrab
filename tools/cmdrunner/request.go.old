@@ -1,0 +1,342 @@
+package cmdrunner
+
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+	"runtime"
+	"strings"
+)
+
+type Mode string
+
+const (
+	ModeAuto  Mode = "auto"
+	ModeArgs  Mode = "args"
+	ModeShell Mode = "shell"
+)
+
+type Request struct {
+	// auto | args | shell
+	Mode Mode `json:"mode,omitempty"`
+
+	// args mode
+	Program string   `json:"program,omitempty"`
+	Args    []string `json:"args,omitempty"`
+
+	// shell mode
+	ShellCommand string `json:"shell_command,omitempty"`
+
+	// auto mode fallback
+	Command string `json:"command,omitempty"`
+
+	// optional working directory
+	Dir string `json:"dir,omitempty"`
+
+	// optional explanation from LLM for audit/debug
+	Reason string `json:"reason,omitempty"`
+}
+
+type Result struct {
+	Mode     Mode     `json:"mode"`
+	Program  string   `json:"program,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	Command  string   `json:"command,omitempty"`
+	Stdout   string   `json:"stdout"`
+	Stderr   string   `json:"stderr"`
+	ExitCode int      `json:"exit_code"`
+}
+
+var (
+	ErrEmptyRequest     = errors.New("empty request")
+	ErrInvalidArgsMode  = errors.New("args mode requires program")
+	ErrInvalidShellMode = errors.New("shell mode requires shell_command")
+)
+
+func NormalizeRequest(req Request) (Mode, Request, error) {
+	if isEmpty(req) {
+		return "", Request{}, ErrEmptyRequest
+	}
+
+	mode := req.Mode
+	if mode == "" {
+		mode = ModeAuto
+	}
+
+	switch mode {
+	case ModeArgs:
+		if strings.TrimSpace(req.Program) == "" {
+			return "", Request{}, ErrInvalidArgsMode
+		}
+		return ModeArgs, Request{
+			Mode:    ModeArgs,
+			Program: req.Program,
+			Args:    cloneStrings(req.Args),
+			Dir:     req.Dir,
+			Reason:  req.Reason,
+		}, nil
+
+	case ModeShell:
+		if strings.TrimSpace(req.ShellCommand) == "" {
+			return "", Request{}, ErrInvalidShellMode
+		}
+		return ModeShell, Request{
+			Mode:         ModeShell,
+			ShellCommand: req.ShellCommand,
+			Dir:          req.Dir,
+			Reason:       req.Reason,
+		}, nil
+
+	case ModeAuto:
+		// If the caller already gave args fields, prefer args.
+		if strings.TrimSpace(req.Program) != "" {
+			return ModeArgs, Request{
+				Mode:    ModeArgs,
+				Program: req.Program,
+				Args:    cloneStrings(req.Args),
+				Dir:     req.Dir,
+				Reason:  chooseReason(req.Reason, "auto resolved to args because program was explicitly provided"),
+			}, nil
+		}
+
+		// If the caller already gave shell field, prefer shell.
+		if strings.TrimSpace(req.ShellCommand) != "" {
+			return ModeShell, Request{
+				Mode:         ModeShell,
+				ShellCommand: req.ShellCommand,
+				Dir:          req.Dir,
+				Reason:       chooseReason(req.Reason, "auto resolved to shell because shell_command was explicitly provided"),
+			}, nil
+		}
+
+		cmd := strings.TrimSpace(req.Command)
+		if cmd == "" {
+			return "", Request{}, ErrEmptyRequest
+		}
+
+		if NeedsShell(cmd, runtime.GOOS) {
+			return ModeShell, Request{
+				Mode:         ModeShell,
+				ShellCommand: cmd,
+				Dir:          req.Dir,
+				Reason:       chooseReason(req.Reason, "auto resolved to shell because command requires shell syntax"),
+			}, nil
+		}
+
+		program, args, err := SplitCommandLine(cmd)
+		if err != nil {
+			return ModeShell, Request{
+				Mode:         ModeShell,
+				ShellCommand: cmd,
+				Dir:          req.Dir,
+				Reason:       chooseReason(req.Reason, "auto fell back to shell because command line could not be safely split"),
+			}, nil
+		}
+
+		return ModeArgs, Request{
+			Mode:    ModeArgs,
+			Program: program,
+			Args:    args,
+			Dir:     req.Dir,
+			Reason:  chooseReason(req.Reason, "auto resolved to args because command is a simple executable plus arguments"),
+		}, nil
+
+	default:
+		return "", Request{}, fmt.Errorf("invalid mode: %s", mode)
+	}
+}
+
+func NeedsShell(command, goos string) bool {
+	s := strings.TrimSpace(command)
+	if s == "" {
+		return false
+	}
+
+	if hasUnquotedShellMeta(s) {
+		return true
+	}
+
+	first := strings.ToLower(firstToken(s))
+	if first == "" {
+		return false
+	}
+
+	posixBuiltins := map[string]struct{}{
+		"cd": {}, "export": {}, "source": {}, ".": {}, "alias": {}, "unalias": {},
+		"set": {}, "unset": {}, "eval": {}, "exec": {}, "trap": {}, "umask": {},
+		"for": {}, "while": {}, "if": {}, "then": {}, "fi": {}, "case": {}, "function": {},
+	}
+
+	windowsBuiltins := map[string]struct{}{
+		"cd": {}, "dir": {}, "copy": {}, "del": {}, "erase": {}, "move": {},
+		"ren": {}, "rename": {}, "set": {}, "type": {}, "cls": {}, "echo": {},
+	}
+
+	if goos == "windows" {
+		_, ok := windowsBuiltins[first]
+		return ok
+	}
+
+	_, ok := posixBuiltins[first]
+	return ok
+}
+
+func SplitCommandLine(s string) (string, []string, error) {
+	var parts []string
+	var buf strings.Builder
+
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	flush := func() {
+		if buf.Len() > 0 {
+			parts = append(parts, buf.String())
+			buf.Reset()
+		}
+	}
+
+	for _, r := range s {
+		if escaped {
+			buf.WriteRune(r)
+			escaped = false
+			continue
+		}
+
+		switch r {
+		case '\\':
+			if inSingle {
+				buf.WriteRune(r)
+			} else {
+				escaped = true
+			}
+
+		case '\'':
+			if inDouble {
+				buf.WriteRune(r)
+			} else {
+				inSingle = !inSingle
+			}
+
+		case '"':
+			if inSingle {
+				buf.WriteRune(r)
+			} else {
+				inDouble = !inDouble
+			}
+
+		case ' ', '\t', '\n':
+			if inSingle || inDouble {
+				buf.WriteRune(r)
+			} else {
+				flush()
+			}
+
+		default:
+			buf.WriteRune(r)
+		}
+	}
+
+	if escaped || inSingle || inDouble {
+		return "", nil, errors.New("unclosed quote or dangling escape")
+	}
+
+	flush()
+
+	if len(parts) == 0 {
+		return "", nil, ErrEmptyRequest
+	}
+
+	return parts[0], parts[1:], nil
+}
+
+func FirstToken(s string) string {
+	return firstToken(s)
+}
+
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var e *exec.ExitError
+	if errors.As(err, &e) {
+		return e.ExitCode()
+	}
+	return -1
+}
+
+func JoinCommand(program string, args []string) string {
+	if len(args) == 0 {
+		return program
+	}
+	return program + " " + strings.Join(args, " ")
+}
+
+func hasUnquotedShellMeta(s string) bool {
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	for _, r := range s {
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		switch r {
+		case '\\':
+			if !inSingle {
+				escaped = true
+			}
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		default:
+			if inSingle || inDouble {
+				continue
+			}
+			switch r {
+			case '>', '<', '|', '&', ';', '$', '*', '?', '(', ')', '[', ']', '{', '}', '`', '~':
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func firstToken(s string) string {
+	p, _, err := SplitCommandLine(s)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+func isEmpty(req Request) bool {
+	return strings.TrimSpace(req.Program) == "" &&
+		len(req.Args) == 0 &&
+		strings.TrimSpace(req.ShellCommand) == "" &&
+		strings.TrimSpace(req.Command) == ""
+}
+
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func chooseReason(current, fallback string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	return fallback
+}

@@ -1,0 +1,139 @@
+package cmdrunner
+
+const ToolName = "cmdrunner"
+
+const ToolDescription = `Execute commands with cmdrunner. Default to args mode. Use shell mode only when the command requires shell syntax such as redirection (> >> <), pipelines (|), chaining (&& ||), wildcard expansion, environment-variable expansion, or shell builtins.`
+
+const ToolUsageGuide = `
+Use args mode by default.
+
+Choose args mode when the task can be expressed as one executable plus an explicit argument list, with no shell syntax.
+
+Choose shell mode only when the command requires shell behavior, such as:
+- redirection: > >> <
+- pipelines: |
+- chaining: && ||
+- wildcard expansion: * ?
+- environment-variable expansion
+- shell builtins
+
+For args mode, fill:
+- program
+- args
+
+For shell mode, fill:
+- shell_command
+
+For auto mode, fill:
+- command
+
+Prefer args mode for safety and portability.
+`
+
+const ToolSchemaJSON = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opengrab.local/tools/cmdrunner/cmdrunner.schema.json",
+  "title": "CmdRunnerRequest",
+  "description": "Schema for selecting args or shell execution in cmdrunner.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["auto", "args", "shell"],
+      "default": "auto",
+      "description": "Execution mode. Prefer args unless shell syntax is required."
+    },
+    "program": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Executable name for args mode."
+    },
+    "args": {
+      "type": "array",
+      "description": "Argument list for args mode.",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "shell_command": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Raw command string for shell mode."
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Raw command string for auto mode."
+    },
+    "dir": {
+      "type": "string",
+      "description": "Optional working directory."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Optional explanation for why the mode was chosen."
+    }
+  },
+  "oneOf": [
+    {
+      "title": "ArgsMode",
+      "properties": {
+        "mode": { "const": "args" }
+      },
+      "required": ["mode", "program"]
+    },
+    {
+      "title": "ShellMode",
+      "properties": {
+        "mode": { "const": "shell" }
+      },
+      "required": ["mode", "shell_command"]
+    },
+    {
+      "title": "AutoMode",
+      "properties": {
+        "mode": { "const": "auto" }
+      },
+      "required": ["mode"],
+      "anyOf": [
+        { "required": ["command"] },
+        { "required": ["program"] },
+        { "required": ["shell_command"] }
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "mode": "args",
+      "program": "go",
+      "args": ["version"],
+      "reason": "single executable with explicit arguments"
+    },
+    {
+      "mode": "shell",
+      "shell_command": "echo \"1234567\" > example.txt",
+      "reason": "uses output redirection"
+    },
+    {
+      "mode": "auto",
+      "command": "cat file.txt | grep hello"
+    }
+  ]
+}`
+
+// ToolDefinition is convenient when exposing the tool to an LLM runtime.
+type ToolDefinition struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	InputSchema string `json:"input_schema"`
+}
+
+func GetToolDefinition() ToolDefinition {
+	return ToolDefinition{
+		Name:        ToolName,
+		Description: ToolDescription,
+		InputSchema: ToolSchemaJSON,
+	}
+}
