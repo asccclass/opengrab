@@ -1,0 +1,5 @@
+ASCS_API_TOKEN=sk-XuHpruV31_MRp3ADmqFe3A
+ASCS_API_BASE_URL=http://10.109.190.13:8003/v1
+X=https://api.ascs.sinica.edu.tw/v1
+ASCS_MODEL_NAME=gemma-4-31b-it-fp8
+md=gemma-4-31B-it
